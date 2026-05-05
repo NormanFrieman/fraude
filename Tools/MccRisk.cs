@@ -1,4 +1,4 @@
-namespace Fraude;
+namespace Fraude.Tools;
 
 public static class MccRisk
 {
@@ -13,8 +13,7 @@ public static class MccRisk
         { 7995 , 0.85f },
         { 4511 , 0.35f },
         { 5311 , 0.25f },
-        { 5999 , 0.50f },
-        { 0, 0.5f}
+        { 5999 , 0.50f }
     };
 
     public static float GetValue(int id) => Values.GetValueOrDefault(id, 0.5f);

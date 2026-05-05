@@ -1,36 +1,38 @@
-namespace Fraude;
+using Fraude.Models;
 
-public static class FraudManager
+namespace Fraude.Tools;
+
+public class FraudManager
 {
-    private static readonly SortedSet<(double dist, string label)> TopRegisters = [];
+    private readonly SortedList<double, string> _topRegisters = [];
 
-    public static void CalcTopRegisters(VectorBase[] vectorsBase, float[] values)
+    public void CalcTopRegisters(VectorBase[] vectorsBase, float[] values)
     {
-        TopRegisters.Clear();
         foreach (var (vector, label) in vectorsBase)
         {
             double sum = 0;
             for (var i = 0; i < 14; i++)
             {
-                sum += Math.Pow(vector[i] - values[i], 2);
+                var sub = vector[i] - values[i];
+                var dot = sub * sub;
+                sum += dot;
             }
-
             var dist = Math.Sqrt(sum);
             StoreTopRegisters(dist, label);
         }
     }
 
-    private static void StoreTopRegisters(double dist, string label)
+    private void StoreTopRegisters(double dist, string label)
     {
-        TopRegisters.Add((dist, label));
-        
-        if (TopRegisters.Count > 5)
-            TopRegisters.Remove(TopRegisters.Max);
+        _topRegisters.Add(dist, label);
+
+        if (_topRegisters.Count > 5)
+            _topRegisters.RemoveAt(4);
     }
 
-    public static (bool, float) Detect()
+    public (bool, float) Detect()
     {
-        float frauds = TopRegisters.Count(x => x.label.Equals("fraud"));
+        float frauds = _topRegisters.Count(x => x.Value.Equals("fraud"));
         return ((frauds / 5) < 0.6, (frauds / 5));
     }
 }
