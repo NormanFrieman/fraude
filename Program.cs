@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+using System.Diagnostics;
 using System.Text.Json;
 using Fraude.Models;
 using Fraude.Tools;
@@ -5,7 +7,7 @@ using Microsoft.AspNetCore.Mvc;
 using SharedJsonContext = Fraude.Models.SharedJsonContext;
 
 var jsonContent = File.ReadAllText("References/references.json");
-var vectorBases = JsonSerializer.Deserialize<VectorBase[]>(jsonContent, SharedJsonContext.Default.VectorBaseArray);
+var vectorBases = JsonSerializer.Deserialize<ImmutableArray<VectorBase>>(jsonContent, SharedJsonContext.Default.ImmutableArrayVectorBase);
 if (vectorBases == null || vectorBases.Length == 0)
     throw new Exception();
 
@@ -15,18 +17,14 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 {
     options.SerializerOptions.TypeInfoResolver = SharedJsonContext.Default;
 });
-builder.Services.AddSingleton(vectorBases);
 builder.Services.AddScoped<FraudManager>();
 
 var fraudeApi = builder.Build();
 
 fraudeApi.MapPost("/fraud-score", IResult (
     FraudScore score,
-    [FromServices] VectorBase[] vectorsBase,
     [FromServices] FraudManager fraudManager) =>
 {
-    // Console.WriteLine("Start");
-    // var sw = Stopwatch.StartNew();
     var transaction = score.transaction;
     var customer = score.customer;
     var lastTransaction = score.last_transaction;
@@ -67,20 +65,16 @@ fraudeApi.MapPost("/fraud-score", IResult (
         kmFromHome, txCount24H, isOnline, cardPresent, unknownMerchant, mccRisk, merchantAvgAmount
     ];
 
-    // sw.Stop();
-    // Console.WriteLine($"{sw.ElapsedMilliseconds} ms");
-    //
-    // sw.Restart();
-    fraudManager.CalcTopRegisters(vectorsBase, vector);
-    // sw.Stop();
-    // Console.WriteLine($"{sw.ElapsedMilliseconds} ms");
-
-    // sw.Restart();
-    var (decision, fraudScore) = fraudManager.Detect();
-    var response = new FraudScoreResponse(decision, fraudScore);
+    // Console.WriteLine("Start");
+    // var sw = Stopwatch.StartNew();
+    fraudManager.CalcTopRegisters(vectorBases, vector);
     // sw.Stop();
     // Console.WriteLine($"{sw.ElapsedMilliseconds} ms");
     // Console.WriteLine("Finished");
+    
+    var (decision, fraudScore) = fraudManager.Detect();
+    var response = new FraudScoreResponse(decision, fraudScore);
+    
     return Results.Ok(response);
 });
 

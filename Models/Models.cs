@@ -1,3 +1,5 @@
+using System.Collections.Frozen;
+using System.Collections.Immutable;
 using System.Text.Json.Serialization;
 
 namespace Fraude.Models;
@@ -24,6 +26,6 @@ public record VectorBase(float[] vector, string label);
 [JsonSerializable(typeof(Terminal))]
 [JsonSerializable(typeof(LastTransaction))]
 [JsonSerializable(typeof(FraudScore))]
-[JsonSerializable(typeof(VectorBase[]))]
+[JsonSerializable(typeof(ImmutableArray<VectorBase>))]
 [JsonSerializable(typeof(FraudScoreResponse))]
 internal partial class SharedJsonContext : JsonSerializerContext { }

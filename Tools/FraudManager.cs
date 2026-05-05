@@ -1,38 +1,59 @@
+using System.Collections.Immutable;
+using System.Numerics;
 using Fraude.Models;
 
 namespace Fraude.Tools;
-
 public class FraudManager
 {
-    private readonly SortedList<double, string> _topRegisters = [];
+    private readonly TopScores _topScores = new();
 
-    public void CalcTopRegisters(VectorBase[] vectorsBase, float[] values)
+    public void CalcTopRegisters(ImmutableArray<VectorBase> vectorsBase, float[] values)
     {
         foreach (var (vector, label) in vectorsBase)
         {
-            double sum = 0;
-            for (var i = 0; i < 14; i++)
-            {
-                var sub = vector[i] - values[i];
-                var dot = sub * sub;
-                sum += dot;
-            }
-            var dist = Math.Sqrt(sum);
-            StoreTopRegisters(dist, label);
+            var dist = Euclidiana(vector, values);
+            _topScores.Add(dist, label);
         }
     }
 
-    private void StoreTopRegisters(double dist, string label)
+    private static double Euclidiana(float[] vector, float[] values)
     {
-        _topRegisters.Add(dist, label);
+        var i = 0;
+        var simdLen = Vector<float>.Count;
 
-        if (_topRegisters.Count > 5)
-            _topRegisters.RemoveAt(4);
+        float sum = 0;
+        for (; i < vector.Length - simdLen; i += simdLen)
+        {
+            var va = new Vector<float>(vector, i);
+            var vb = new Vector<float>(values, i);
+            var sub = Vector.Subtract(va, vb);
+            var res = Vector.Multiply(sub, sub);
+
+            sum += Vector.Sum(res);
+        }
+
+        for (; i < vector.Length; i++)
+        {
+            var sub = vector[i] - values[i];
+            var dot = sub * sub;
+            sum += dot;
+        }
+
+        return Math.Sqrt(sum);
     }
 
     public (bool, float) Detect()
     {
-        float frauds = _topRegisters.Count(x => x.Value.Equals("fraud"));
+        // foreach (var register in _topRegisters)
+        // {
+        //     Console.WriteLine(register.Key);
+        // }
+        var scores = _topScores.Get();
+        float frauds = scores
+            .Select(x => x.Item2)
+            .Count(x => x.Equals("fraud"));
+        
+        _topScores.Clear();
         return ((frauds / 5) < 0.6, (frauds / 5));
     }
 }
