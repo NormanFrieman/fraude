@@ -1,5 +1,4 @@
 using System.Collections.Immutable;
-using System.Diagnostics;
 using System.Text.Json;
 using Fraude.Models;
 using Fraude.Tools;
@@ -64,16 +63,13 @@ fraudeApi.MapPost("/fraud-score", IResult (
         amount, installments, amountVsAvg, hourOfDay, dayOfWeek, minutesSinceLastTx, kmFromLastTx,
         kmFromHome, txCount24H, isOnline, cardPresent, unknownMerchant, mccRisk, merchantAvgAmount
     ];
-
-    // Console.WriteLine("Start");
-    // var sw = Stopwatch.StartNew();
-    var topScores = new TopScores();
-    FraudManager.CalcTopRegisters(vectorBases, vector, topScores);
-    // sw.Stop();
-    // Console.WriteLine($"{sw.ElapsedMilliseconds} ms");
-    // Console.WriteLine("Finished");
     
-    var (decision, fraudScore) = FraudManager.Detect(topScores);
+    Span<(float, bool)> topScore = stackalloc (float, bool)[5];
+    var length = 0;
+    
+    FraudManager.CalcTopRegisters(vectorBases, vector, topScore, ref length);
+    
+    var (decision, fraudScore) = FraudManager.Detect(topScore);
     var response = new FraudScoreResponse(decision, fraudScore);
     
     return Results.Ok(response);
