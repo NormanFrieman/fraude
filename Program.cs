@@ -3,11 +3,13 @@ using System.Diagnostics;
 using System.Text.Json;
 using Fraude.Models;
 using Fraude.Tools;
-using Microsoft.AspNetCore.Mvc;
 using SharedJsonContext = Fraude.Models.SharedJsonContext;
 
-var jsonContent = File.ReadAllText("References/references.json");
-var vectorBases = JsonSerializer.Deserialize<ImmutableArray<VectorBase>>(jsonContent, SharedJsonContext.Default.ImmutableArrayVectorBase);
+const string path = "References/references.bin";
+await using var fs = File.OpenRead(path);
+var vectorBases = await JsonSerializer.DeserializeAsync<ImmutableArray<VectorBase>>(
+    fs,
+    SharedJsonContext.Default.ImmutableArrayVectorBase);
 if (vectorBases == null || vectorBases.Length == 0)
     throw new Exception();
 
@@ -17,13 +19,11 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 {
     options.SerializerOptions.TypeInfoResolver = SharedJsonContext.Default;
 });
-builder.Services.AddScoped<FraudManager>();
 
 var fraudeApi = builder.Build();
 
 fraudeApi.MapPost("/fraud-score", IResult (
-    FraudScore score,
-    [FromServices] FraudManager fraudManager) =>
+    FraudScore score) =>
 {
     var transaction = score.transaction;
     var customer = score.customer;
@@ -67,12 +67,13 @@ fraudeApi.MapPost("/fraud-score", IResult (
 
     // Console.WriteLine("Start");
     // var sw = Stopwatch.StartNew();
-    fraudManager.CalcTopRegisters(vectorBases, vector);
+    var topScores = new TopScores();
+    FraudManager.CalcTopRegisters(vectorBases, vector, topScores);
     // sw.Stop();
     // Console.WriteLine($"{sw.ElapsedMilliseconds} ms");
     // Console.WriteLine("Finished");
     
-    var (decision, fraudScore) = fraudManager.Detect();
+    var (decision, fraudScore) = FraudManager.Detect(topScores);
     var response = new FraudScoreResponse(decision, fraudScore);
     
     return Results.Ok(response);

@@ -3,16 +3,14 @@ using System.Numerics;
 using Fraude.Models;
 
 namespace Fraude.Tools;
-public class FraudManager
+public static class FraudManager
 {
-    private readonly TopScores _topScores = new();
-
-    public void CalcTopRegisters(ImmutableArray<VectorBase> vectorsBase, float[] values)
+    public static void CalcTopRegisters(ImmutableArray<VectorBase> vectorsBase, float[] values, TopScores topScores)
     {
-        foreach (var (vector, label) in vectorsBase)
+        foreach (var (vector, isFraud) in vectorsBase)
         {
             var dist = Euclidiana(vector, values);
-            _topScores.Add(dist, label);
+            topScores.Add(dist, isFraud);
         }
     }
 
@@ -42,18 +40,9 @@ public class FraudManager
         return Math.Sqrt(sum);
     }
 
-    public (bool, float) Detect()
+    public static (bool, float) Detect(TopScores topScores)
     {
-        // foreach (var register in _topRegisters)
-        // {
-        //     Console.WriteLine(register.Key);
-        // }
-        var scores = _topScores.Get();
-        float frauds = scores
-            .Select(x => x.Item2)
-            .Count(x => x.Equals("fraud"));
-        
-        _topScores.Clear();
-        return ((frauds / 5) < 0.6, (frauds / 5));
+        var fraudScore = topScores.GetFraudScore();
+        return (fraudScore < 0.6, fraudScore);
     }
 }

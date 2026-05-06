@@ -3,44 +3,45 @@ namespace Fraude.Tools;
 
 public class TopScores
 {
-    private (double, string)[] _scores = new (double, string)[5];
+    private (double, bool)[] _scores = new(double, bool) [5];
     private int _length = 0;
     
-    public void Add(double score, string label)
+    public void Add(double score, bool isFraud)
     {
         if (_length == 4 && score > _scores[4].Item1)
             return;
 
-        _length = AddOrder(score, label, 0);
+        _length = AddOrder(score, isFraud, 0);
     }
 
-    public (double, string)[] Get()
+    public float GetFraudScore()
     {
-        return _scores;
-    }
+        float frauds = 0;
+        for (var i = 0; i < 5; i++)
+        {
+            if (_scores[i].Item2)
+                frauds++;
+        }
 
-    public void Clear()
-    {
-        _scores = new (double, string)[5];
-        _length = 0;
+        return frauds / 5;
     }
     
-    private int AddOrder(double score, string label, int i)
+    private int AddOrder(double score, bool isFraud, int i)
     {
         if (i > 4)
             return 4;
         
-        var (scoreItem, labelItem) = _scores[i];
-        if (scoreItem == 0 && string.IsNullOrEmpty(labelItem))
+        if (i > _length)
         {
-            _scores[i] = (score, label);
+            _scores[i] = (score, isFraud);
             return i;
         }
 
+        var (scoreItem, isFraudItem) = _scores[i];
         if (score >= scoreItem)
-            return AddOrder(score, label, i + 1);
+            return AddOrder(score, isFraud, i + 1);
         
-        _scores[i] = (score, label);
-        return AddOrder(scoreItem, labelItem, i+1);
+        _scores[i] = (score, isFraud);
+        return AddOrder(scoreItem, isFraudItem, i+1);
     }
 }
