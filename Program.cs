@@ -1,19 +1,39 @@
-using System.Collections.Immutable;
-using System.Text.Json;
+using System.Runtime.InteropServices;
 using Fraude.Models;
 using Fraude.Tools;
 using SharedJsonContext = Fraude.Models.SharedJsonContext;
 
-const string path = "References/references.bin";
-await using var fs = File.OpenRead(path);
-var vectorBases = await JsonSerializer.DeserializeAsync<ImmutableArray<VectorBase>>(
-    fs,
-    SharedJsonContext.Default.ImmutableArrayVectorBase);
-if (vectorBases == null || vectorBases.Length == 0)
+
+#region Read reference base
+
+const string path = "References/refs_native.bin";
+const int weightsLength = 14;
+const int recordSize = (weightsLength * sizeof(float)) + 1;
+
+var rawBytes = File.ReadAllBytes(path);
+var fileSize = rawBytes.Length - sizeof(int);
+var count = fileSize / recordSize;
+ReadOnlySpan<byte> body = rawBytes.AsSpan(4);
+
+var expectedBodySize = count * recordSize;
+if (body.Length != expectedBodySize)
     throw new Exception();
 
-var builder = WebApplication.CreateSlimBuilder(args);
+var allVectors = new float[count * weightsLength];
+var allFrauds = new bool[count];
 
+for (var i = 0; i < count; i++)
+{
+    var recordOffset = i * recordSize;
+
+    var src = MemoryMarshal.Cast<byte, float>(body.Slice(recordOffset, weightsLength * sizeof(float)));
+    src.CopyTo(allVectors.AsSpan(i * weightsLength));
+    allFrauds[i] = body[recordOffset + (weightsLength * sizeof(float))] == 1;
+}
+
+#endregion
+
+var builder = WebApplication.CreateSlimBuilder(args);
 builder.Services.ConfigureHttpJsonOptions(options =>
 {
     options.SerializerOptions.TypeInfoResolver = SharedJsonContext.Default;
@@ -21,9 +41,11 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 
 var fraudeApi = builder.Build();
 
-fraudeApi.MapPost("/fraud-score", IResult (
+fraudeApi.MapPost("/fraud-score", (
     FraudScore score) =>
 {
+    #region Normalize values and store in vector
+
     var transaction = score.transaction;
     var customer = score.customer;
     var lastTransaction = score.last_transaction;
@@ -39,7 +61,7 @@ fraudeApi.MapPost("/fraud-score", IResult (
         : (int)transaction.requested_at.DayOfWeek - 1;
     var dayOfWeek = Math.Clamp(dayOfWeekReq / 6f, 0, 6);
     var minutesSinceLastTx = lastTransaction is not null
-        ? Math.Clamp(((DateTime.UtcNow - lastTransaction.timestamp).Minutes / Normalization.MaxMinutes), 0, 1)
+        ? Math.Clamp((float)(DateTime.UtcNow - lastTransaction.timestamp).TotalMinutes / Normalization.MaxMinutes, 0, 1)
         : -1;
     var kmFromLastTx = lastTransaction is not null
         ? Math.Clamp((lastTransaction.km_from_current / Normalization.MaxKm), 0, 1)
@@ -58,21 +80,44 @@ fraudeApi.MapPost("/fraud-score", IResult (
     var mccRisk = MccRisk.GetValue(merchant.mcc);
     var merchantAvgAmount = Math.Clamp((merchant.avg_amount / Normalization.MaxMerchantAvgAmount), 0, 1);
 
-    float[] vector =
-    [
-        amount, installments, amountVsAvg, hourOfDay, dayOfWeek, minutesSinceLastTx, kmFromLastTx,
-        kmFromHome, txCount24H, isOnline, cardPresent, unknownMerchant, mccRisk, merchantAvgAmount
-    ];
-    
+    Span<float> vector = stackalloc float[14];
+    vector[0] = amount;
+    vector[1] = installments;
+    vector[2] = amountVsAvg;
+    vector[3] = hourOfDay;
+    vector[4] = dayOfWeek;
+    vector[5] = minutesSinceLastTx;
+    vector[6] = kmFromLastTx;
+    vector[7] = kmFromHome;
+    vector[8] = txCount24H;
+    vector[9] = isOnline;
+    vector[10] = cardPresent;
+    vector[11] = unknownMerchant;
+    vector[12] = mccRisk;
+    vector[13] = merchantAvgAmount;
+
+    #endregion
+
+    #region Calc euclidian distance
+
     Span<(float, bool)> topScore = stackalloc (float, bool)[5];
     var length = 0;
     
-    FraudManager.CalcTopRegisters(vectorBases, vector, topScore, ref length);
+    for (var i = 0; i < count; i++)
+    {
+        ReadOnlySpan<float> refVector = allVectors.AsSpan(i * weightsLength, weightsLength);
+        var isFraud = allFrauds[i];
+        
+        var dist = FraudManager.Euclidean(refVector, vector);
+        FraudManager.Add(dist, isFraud, topScore, ref length);
+    }
+
+    #endregion
     
     var (decision, fraudScore) = FraudManager.Detect(topScore);
     var response = new FraudScoreResponse(decision, fraudScore);
     
-    return Results.Ok(response);
+    return response;
 });
 
 fraudeApi.MapGet("/ready", IResult () => Results.Ok());

@@ -1,22 +1,10 @@
-// ReSharper disable TailRecursiveCall
-using System.Collections.Immutable;
 using System.Numerics;
 using System.Runtime.CompilerServices;
-using Fraude.Models;
 
 namespace Fraude.Tools;
 public static class FraudManager
 {
-    public static void CalcTopRegisters(ImmutableArray<VectorBase> vectorsBase, float[] values, Span<(float, bool)> scores, ref int length)
-    {
-        foreach (var (vector, isFraud) in vectorsBase)
-        {
-            var dist = Euclidiana(vector, values);
-            Add(dist, isFraud, scores, ref length);
-        }
-    }
-
-    private static float Euclidiana(float[] vector, float[] values)
+    public static float Euclidean(ReadOnlySpan<float> vector, ReadOnlySpan<float> values)
     {
         var i = 0;
         var simdLen = Vector<float>.Count;
@@ -24,22 +12,19 @@ public static class FraudManager
         float sum = 0;
         for (; i < vector.Length - simdLen; i += simdLen)
         {
-            var va = new Vector<float>(vector, i);
-            var vb = new Vector<float>(values, i);
-            var sub = Vector.Subtract(va, vb);
-            var res = Vector.Multiply(sub, sub);
-
-            sum += Vector.Sum(res);
+            var va = Vector.Create(vector[i..]);
+            var vb = Vector.Create(values[i..]);
+            var sub = va - vb;
+            sum += Vector.Dot(sub, sub);
         }
 
         for (; i < vector.Length; i++)
         {
             var sub = vector[i] - values[i];
-            var dot = sub * sub;
-            sum += dot;
+            sum += sub * sub;
         }
 
-        return (float)Math.Sqrt(sum);
+        return sum;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -49,7 +34,7 @@ public static class FraudManager
         return (fraudScore < 0.6, fraudScore);
     }
 
-    private static void Add(float score, bool isFraud, Span<(float, bool)> scores, ref int length)
+    public static void Add(float score, bool isFraud, Span<(float, bool)> scores, ref int length)
     {
         if (length == 4 && score > scores[4].Item1)
             return;
@@ -68,23 +53,31 @@ public static class FraudManager
 
         return frauds / 5;
     }
-    
+
     private static int AddOrder(float score, bool isFraud, int i, Span<(float, bool)> scores, int length)
     {
-        if (i > 4)
-            return 4;
-        
-        if (i > length)
+        while (true)
         {
-            scores[i] = (score, isFraud);
-            return i;
-        }
+            if (i > 4)
+                return 4;
 
-        var (scoreItem, isFraudItem) = scores[i];
-        if (score >= scoreItem)
-            return AddOrder(score, isFraud, i + 1, scores, length);
-        
-        scores[i] = (score, isFraud);
-        return AddOrder(scoreItem, isFraudItem, i+1, scores, length);
+            if (i > length)
+            {
+                scores[i] = (score, isFraud);
+                return i;
+            }
+
+            var (scoreItem, isFraudItem) = scores[i];
+            if (score >= scoreItem)
+            {
+                i += 1;
+                continue;
+            }
+
+            scores[i] = (score, isFraud);
+            score = scoreItem;
+            isFraud = isFraudItem;
+            i += 1;
+        }
     }
 }
