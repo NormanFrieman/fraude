@@ -13,7 +13,7 @@ The server receives a transaction with customer, merchant, and terminal data, no
 ## Architecture
 
 ```
-┌─────────┐   Unix Sockets   ┌──────────┐
+┌─────────┐       HTTP        ┌──────────┐
 │  nginx  │ ──────────────→  │  api1    │  (0.4 CPU · 160 MB)
 │ (LB)    │                  ├──────────┤
 │ 0.2 CPU │ ──────────────→  │  api2    │  (0.4 CPU · 160 MB)
@@ -21,7 +21,7 @@ The server receives a transaction with customer, merchant, and terminal data, no
 └─────────┘
 ```
 
-- **nginx** acts as a load balancer, distributing requests between two API instances via Unix domain sockets (avoiding TCP overhead).
+- **nginx** acts as a load balancer, distributing requests between two API instances via HTTP.
 - Both API instances share the same reference dataset (`References/refs_native.bin`), loaded at startup.
 - Resource limits follow the competition's strict constraints.
 
@@ -34,7 +34,7 @@ The server receives a transaction with customer, merchant, and terminal data, no
 | **.NET 10 Native AOT** | Configures Native AOT (`<PublishAot>true</PublishAot>`) for minimal memory footprint and fast startup — essential under the 160 MB API limit. |
 | **KNN with K=5** | Simple, interpretable, and effective for fraud detection with a labeled reference dataset. Fraud score = proportion of fraudulent neighbors among the 5 closest matches. |
 | **SIMD Euclidean Distance** | `System.Numerics.Vector<T>` processes 8+ floats per instruction on modern CPUs (AVX2/AVX-512), making the nearest-neighbor search the critical but optimised path. |
-| **Unix Sockets** | Lower latency and lower memory than TCP loopback; required by the competition spec for internal API communication. |
+| **HTTP Internal Communication** | Each API instance listens on port 8080; nginx load balances requests across both instances. |
 | **Binary Reference File** | `refs_native.bin` stores 100,000 float vectors (14 dimensions each) + fraud labels in a compact, memory-mappable format — no parsing overhead at load time. |
 | **`stackalloc` + `Span<T>`** | Zero heap allocations on the hot inference path. The feature vector and the top-5 scores buffer live on the stack. |
 
