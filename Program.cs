@@ -3,7 +3,6 @@ using Fraude.Models;
 using Fraude.Tools;
 using SharedJsonContext = Fraude.Models.SharedJsonContext;
 
-
 #region Read reference base
 
 const string path = "References/refs_native.bin";
@@ -26,7 +25,8 @@ for (var i = 0; i < count; i++)
 {
     var recordOffset = i * recordSize;
 
-    var src = MemoryMarshal.Cast<byte, float>(body.Slice(recordOffset, weightsLength * sizeof(float)));
+    var src = MemoryMarshal.Cast<byte, float>(
+        body.Slice(recordOffset, weightsLength * sizeof(float)));
     src.CopyTo(allVectors.AsSpan(i * weightsLength));
     allFrauds[i] = body[recordOffset + (weightsLength * sizeof(float))] == 1;
 }
@@ -55,11 +55,11 @@ fraudeApi.MapPost("/fraud-score", (
     var amount = Math.Clamp((transaction.amount / Normalization.MaxAmount), 0, 1);
     var installments = Math.Clamp((transaction.installments / Normalization.MaxInstallments), 0, 1);
     var amountVsAvg = Math.Clamp((transaction.amount / customer.avg_amount) / Normalization.AmountVsAvgRatio, 0, 1);
-    var hourOfDay = Math.Clamp((transaction.requested_at.Hour / 23f), 0, 23);
+    var hourOfDay = Math.Clamp((transaction.requested_at.Hour / 23f), 0, 1);
     var dayOfWeekReq = transaction.requested_at.DayOfWeek == DayOfWeek.Sunday
         ? 6
         : (int)transaction.requested_at.DayOfWeek - 1;
-    var dayOfWeek = Math.Clamp(dayOfWeekReq / 6f, 0, 6);
+    var dayOfWeek = Math.Clamp(dayOfWeekReq / 6f, 0, 1);
     var minutesSinceLastTx = lastTransaction is not null
         ? Math.Clamp((float)(DateTime.UtcNow - lastTransaction.timestamp).TotalMinutes / Normalization.MaxMinutes, 0, 1)
         : -1;

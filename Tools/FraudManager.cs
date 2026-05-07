@@ -12,8 +12,8 @@ public static class FraudManager
         float sum = 0;
         for (; i < vector.Length - simdLen; i += simdLen)
         {
-            var va = Vector.Create(vector[i..]);
-            var vb = Vector.Create(values[i..]);
+            var va = new Vector<float>(vector.Slice(i));
+            var vb = new Vector<float>(values.Slice(i));
             var sub = va - vb;
             sum += Vector.Dot(sub, sub);
         }
@@ -36,7 +36,7 @@ public static class FraudManager
 
     public static void Add(float score, bool isFraud, Span<(float, bool)> scores, ref int length)
     {
-        if (length == 4 && score > scores[4].Item1)
+        if (length == 5 && score > scores[4].Item1)
             return;
 
         length = AddOrder(score, isFraud, 0, scores, length);
