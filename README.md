@@ -13,7 +13,7 @@ The server receives a transaction with customer, merchant, and terminal data, no
 ## Architecture
 
 ```
-┌─────────┐       HTTP        ┌──────────┐
+┌─────────┐       HTTP       ┌──────────┐
 │  nginx  │ ──────────────→  │  api1    │  (0.4 CPU · 160 MB)
 │ (LB)    │                  ├──────────┤
 │ 0.2 CPU │ ──────────────→  │  api2    │  (0.4 CPU · 160 MB)
