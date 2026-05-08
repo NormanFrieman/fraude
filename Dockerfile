@@ -1,25 +1,17 @@
-﻿FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS base
-USER $APP_UID
+﻿FROM mcr.microsoft.com/dotnet/sdk:11.0-preview-alpine AS builder
+RUN apk add --no-cache clang zlib-dev musl-dev
 WORKDIR /app
 EXPOSE 8080
 EXPOSE 8081
 
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
-ARG BUILD_CONFIGURATION=Release
-RUN apt-get update && apt-get install -y --no-install-recommends clang zlib1g-dev && rm -rf /var/lib/apt/lists/*
-WORKDIR /src
 COPY ["Fraude.csproj", "./"]
-RUN dotnet restore "Fraude.csproj"
+RUN dotnet restore "Fraude.csproj" -r linux-musl-x64
 COPY . .
-WORKDIR "/src/"
-RUN dotnet build "./Fraude.csproj" -c $BUILD_CONFIGURATION -o /app/build
+RUN dotnet publish "Fraude.csproj" -c Release -r linux-musl-x64 -o /app/publish
 
-FROM build AS publish
-ARG BUILD_CONFIGURATION=Release
-RUN dotnet publish "./Fraude.csproj" -c $BUILD_CONFIGURATION -o /app/publish
-
-FROM base AS final
+FROM alpine:3.21
 WORKDIR /app
-COPY --from=publish /app/publish .
+COPY --from=builder /app/publish .
 COPY References ./References
+ENV RESOURCES_PATH=/resources
 ENTRYPOINT ["./Fraude"]

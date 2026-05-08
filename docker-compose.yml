@@ -1,21 +1,19 @@
 x-api: &api
   build: .
-  expose:
-    - "8080"
+  environment:
+    - ASPNETCORE_URLS=http://0.0.0
   deploy:
     resources:
       limits:
         cpus: "0.4"
-        memory: "160M"
+        memory: "140M"
 
 services:
   api1:
     <<: *api
-    restart: on-failure
 
   api2:
     <<: *api
-    restart: on-failure
 
   nginx:
     image: nginx:alpine
@@ -24,10 +22,8 @@ services:
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf
     depends_on:
-      api1:
-        condition: service_started
-      api2:
-        condition: service_started
+      - api1
+      - api2
     deploy:
       resources:
         limits:
