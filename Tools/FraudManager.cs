@@ -1,83 +1,39 @@
-using System.Numerics;
 using System.Runtime.CompilerServices;
 
 namespace Fraude.Tools;
+
 public static class FraudManager
 {
-    public static float Euclidean(ReadOnlySpan<float> vector, ReadOnlySpan<float> values)
-    {
-        var i = 0;
-        var simdLen = Vector<float>.Count;
-
-        float sum = 0;
-        for (; i < vector.Length - simdLen; i += simdLen)
-        {
-            var va = new Vector<float>(vector.Slice(i));
-            var vb = new Vector<float>(values.Slice(i));
-            var sub = va - vb;
-            sum += Vector.Dot(sub, sub);
-        }
-
-        for (; i < vector.Length; i++)
-        {
-            var sub = vector[i] - values[i];
-            sum += sub * sub;
-        }
-
-        return sum;
-    }
-
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static (bool, float) Detect(Span<(float, bool)> scores)
+    public static (bool, float) Detect(ReadOnlySpan<(float, bool)> scores, int length)
     {
-        var fraudScore = GetFraudScore(scores);
-        return (fraudScore < 0.6, fraudScore);
-    }
-
-    public static void Add(float score, bool isFraud, Span<(float, bool)> scores, ref int length)
-    {
-        if (length == 5 && score > scores[4].Item1)
-            return;
-
-        length = AddOrder(score, isFraud, 0, scores, length);
-    }
-
-    private static float GetFraudScore(Span<(float, bool)> scores)
-    {
-        float frauds = 0;
-        for (var i = 0; i < 5; i++)
+        var frauds = 0;
+        for (var i = 0; i < length; i++)
         {
             if (scores[i].Item2)
                 frauds++;
         }
 
-        return frauds / 5;
+        var fraudScore = (float)frauds / length;
+        return (fraudScore < 0.6, fraudScore);
     }
 
-    private static int AddOrder(float score, bool isFraud, int i, Span<(float, bool)> scores, int length)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void Add(float score, bool isFraud, Span<(float, bool)> scores, ref int length)
     {
-        while (true)
-        {
-            if (i > 4)
-                return 4;
+        if (length == 5 && score >= scores[4].Item1)
+            return;
 
-            if (i > length)
-            {
-                scores[i] = (score, isFraud);
-                return i;
-            }
+        var pos = 0;
+        while (pos < length && pos < 5 && score >= scores[pos].Item1)
+            pos++;
 
-            var (scoreItem, isFraudItem) = scores[i];
-            if (score >= scoreItem)
-            {
-                i += 1;
-                continue;
-            }
+        var end = length < 5 ? length : 4;
+        for (var i = end; i > pos; i--)
+            scores[i] = scores[i - 1];
 
-            scores[i] = (score, isFraud);
-            score = scoreItem;
-            isFraud = isFraudItem;
-            i += 1;
-        }
+        scores[pos] = (score, isFraud);
+        if (length < 5)
+            length++;
     }
 }
