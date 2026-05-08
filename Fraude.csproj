@@ -8,6 +8,16 @@
         <InvariantGlobalization>true</InvariantGlobalization>
         <PublishAot>true</PublishAot>
         <DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
+        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+        <OptimizationPreference>Speed</OptimizationPreference>
+        <StackTraceSupport>false</StackTraceSupport>
     </PropertyGroup>
+
+    <ItemGroup>
+        <RuntimeHostConfigurationOption Include="System.GC.Server" Value="false" />
+        <RuntimeHostConfigurationOption Include="System.GC.Concurrent" Value="true" />
+        <RuntimeHostConfigurationOption Include="System.GC.HeapHardLimit" Value="125829120" />
+        <RuntimeHostConfigurationOption Include="System.GC.RegionSize" Value="1048576" />
+    </ItemGroup>
 
 </Project>
