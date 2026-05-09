@@ -8,7 +8,7 @@ namespace Fraude.Tools;
 
 public sealed unsafe class IvfSearchEngine : IDisposable
 {
-    private const uint Magic = 0x49564631;
+    private const uint Magic = 0x49564632;
     private const int Dims = 14;
 
     private readonly MemoryMappedFile _mmf;
@@ -16,10 +16,10 @@ public sealed unsafe class IvfSearchEngine : IDisposable
     private readonly byte* _basePtr;
     private readonly int _n;
     private readonly int _k;
-    private readonly sbyte*[] _dimData;
+    private readonly short*[] _dimData;
     private readonly byte* _fraudLabels;
     private readonly uint* _clusterOffsets;
-    private readonly sbyte[][] _centroids;
+    private readonly short[][] _centroids;
 
     private IvfSearchEngine(
         MemoryMappedFile mmf,
@@ -27,10 +27,10 @@ public sealed unsafe class IvfSearchEngine : IDisposable
         byte* basePtr,
         int n,
         int k,
-        sbyte*[] dimData,
+        short*[] dimData,
         byte* fraudLabels,
         uint* clusterOffsets,
-        sbyte[][] centroids)
+        short[][] centroids)
     {
         _mmf = mmf;
         _accessor = accessor;
@@ -66,23 +66,23 @@ public sealed unsafe class IvfSearchEngine : IDisposable
 
         var offset = 32;
 
-        var centroids = new sbyte[k][];
+        var centroids = new short[k][];
         for (var c = 0; c < k; c++)
         {
-            centroids[c] = new sbyte[Quantization.PaddedDimensions];
-            new ReadOnlySpan<byte>(basePtr + offset, Quantization.PaddedDimensions)
-                .CopyTo(MemoryMarshal.Cast<sbyte, byte>(centroids[c].AsSpan()));
-            offset += Quantization.PaddedDimensions;
+            centroids[c] = new short[Quantization.PaddedDimensions];
+            new ReadOnlySpan<byte>(basePtr + offset, Quantization.PaddedDimensions * 2)
+                .CopyTo(MemoryMarshal.Cast<short, byte>(centroids[c].AsSpan()));
+            offset += Quantization.PaddedDimensions * 2;
         }
 
         var clusterOffsets = (uint*)(basePtr + offset);
         offset += (k + 1) * 4;
 
-        var dimData = new sbyte*[d];
+        var dimData = new short*[d];
         for (var j = 0; j < d; j++)
         {
-            dimData[j] = (sbyte*)(basePtr + offset);
-            offset += n;
+            dimData[j] = (short*)(basePtr + offset);
+            offset += n * 2;
         }
 
         var fraudLabels = basePtr + offset;
@@ -101,44 +101,49 @@ public sealed unsafe class IvfSearchEngine : IDisposable
     [SkipLocalsInit]
     public (bool approved, float fraudScore) Search(ReadOnlySpan<float> queryFloat, int nProbe = 5)
     {
-        Span<sbyte> queryInt8 = stackalloc sbyte[Quantization.PaddedDimensions];
-        Quantization.QuantizeVector(queryFloat, queryInt8);
+        Span<short> queryInt16 = stackalloc short[Quantization.PaddedDimensions];
+        Quantization.QuantizeVectorToInt16(queryFloat, queryInt16);
 
         Span<(float dist, bool isFraud)> topScores = stackalloc (float, bool)[5];
         var topLen = 0;
 
         Span<int> topClusters = stackalloc int[nProbe];
-        FindTopClusters(queryInt8, topClusters);
+        FindTopClusters(queryInt16, topClusters);
 
-        for (var ci = 0; ci < nProbe; ci++)
+        if (Avx2.IsSupported)
         {
-            var c = topClusters[ci];
-            var start = (int)_clusterOffsets[c];
-            var end = (int)_clusterOffsets[c + 1];
-
-            if (Sse41.IsSupported)
-                ScanClusterSimd(queryInt8, start, end, topScores, ref topLen);
-            else
-                ScanClusterScalar(queryInt8, start, end, topScores, ref topLen);
+            for (var ci = 0; ci < nProbe; ci++)
+            {
+                var c = topClusters[ci];
+                ScanClusterAvx2(queryInt16, (int)_clusterOffsets[c], (int)_clusterOffsets[c + 1], topScores, ref topLen);
+            }
+        }
+        else
+        {
+            for (var ci = 0; ci < nProbe; ci++)
+            {
+                var c = topClusters[ci];
+                ScanClusterScalar(queryInt16, (int)_clusterOffsets[c], (int)_clusterOffsets[c + 1], topScores, ref topLen);
+            }
         }
 
         return FraudManager.Detect(topScores, topLen);
     }
 
-    private void FindTopClusters(ReadOnlySpan<sbyte> query, Span<int> topClusters)
+    private void FindTopClusters(ReadOnlySpan<short> query, Span<int> topClusters)
     {
         var k = _centroids.Length;
         var nProbe = topClusters.Length;
 
-        Span<(int dist, int idx)> all = stackalloc (int, int)[k];
+        Span<(long dist, int idx)> all = stackalloc (long, int)[k];
 
         for (var c = 0; c < k; c++)
         {
             var centroid = _centroids[c];
-            var dist = 0;
+            long dist = 0;
             for (var j = 0; j < Dims; j++)
             {
-                var diff = query[j] - centroid[j];
+                var diff = (long)query[j] - (long)centroid[j];
                 dist += diff * diff;
             }
             all[c] = (dist, c);
@@ -161,80 +166,58 @@ public sealed unsafe class IvfSearchEngine : IDisposable
         }
     }
 
+// AVX2 SIMD: process 32 vectors per outer iteration using int accumulator.
+    // Uses saturating add to handle potential overflow (14 * 32767² ≈ 60B > int32 max).
+    // If dist exceeds 1B during accumulation, it won't be in top 5 anyway.
+    private const int OverflowThreshold = 1000000000; // 1B
+
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-    private void ScanClusterSimd(
-        ReadOnlySpan<sbyte> query,
+    private void ScanClusterAvx2(
+        ReadOnlySpan<short> query,
         int start, int end,
         Span<(float, bool)> topScores, ref int topLen)
     {
-        // SSE4.1 SIMD: process 4 vectors per inner iteration using Vector128<int>.
-        // We load 16 sbytes, then use ConvertToVector128Int32 four times to process
-        // four groups of 4 sbytes each, accumulating into four Vector128<int>.
-
         var labels = _fraudLabels;
         var count = end - start;
-        var alignedEnd = start + (count & ~15); // multiple of 16
-        var buf = stackalloc int[16];
+        var alignedEnd = start + (count & ~31);
+        Span<int> dists = stackalloc int[32];
 
-        for (var i = start; i < alignedEnd; i += 16)
+        for (var i = start; i < alignedEnd; i += 32)
         {
-            var acc0 = Vector128<int>.Zero;
-            var acc1 = Vector128<int>.Zero;
-            var acc2 = Vector128<int>.Zero;
-            var acc3 = Vector128<int>.Zero;
+            for (var vi = 0; vi < 32; vi++) dists[vi] = 0;
 
             for (var dim = 0; dim < Dims; dim++)
             {
-                var q = query[dim];
-                var qVec = Vector128.Create((int)q);
+                var q = (int)query[dim];
                 var ptr = _dimData[dim] + i;
 
-                // Load 16 sbytes
-                var bytes = Sse2.LoadVector128(ptr);
+                for (var vi = 0; vi < 32; vi++)
+                {
+                    var diff = q - ptr[vi];
+                    var sq = diff * diff;
+                    var acc = dists[vi];
 
-                // Group 0: bytes 0-3
-                var g0 = Sse41.ConvertToVector128Int32(bytes);
-                var d0 = Sse2.Subtract(qVec, g0);
-                acc0 = Sse2.Add(acc0, Sse41.MultiplyLow(d0, d0));
-
-                // Group 1: bytes 4-7
-                var shifted1 = Sse2.ShiftRightLogical128BitLane(bytes, 4);
-                var g1 = Sse41.ConvertToVector128Int32(shifted1);
-                var d1 = Sse2.Subtract(qVec, g1);
-                acc1 = Sse2.Add(acc1, Sse41.MultiplyLow(d1, d1));
-
-                // Group 2: bytes 8-11
-                var shifted2 = Sse2.ShiftRightLogical128BitLane(bytes, 8);
-                var g2 = Sse41.ConvertToVector128Int32(shifted2);
-                var d2 = Sse2.Subtract(qVec, g2);
-                acc2 = Sse2.Add(acc2, Sse41.MultiplyLow(d2, d2));
-
-                // Group 3: bytes 12-15
-                var shifted3 = Sse2.ShiftRightLogical128BitLane(bytes, 12);
-                var g3 = Sse41.ConvertToVector128Int32(shifted3);
-                var d3 = Sse2.Subtract(qVec, g3);
-                acc3 = Sse2.Add(acc3, Sse41.MultiplyLow(d3, d3));
+                    if (acc < OverflowThreshold)
+                    {
+                        var newAcc = acc + sq;
+                        dists[vi] = (newAcc < acc || newAcc >= OverflowThreshold) ? int.MaxValue : newAcc;
+                    }
+                }
             }
 
-            // Extract 16 distances
-            Sse2.Store(buf + 0, acc0);
-            Sse2.Store(buf + 4, acc1);
-            Sse2.Store(buf + 8, acc2);
-            Sse2.Store(buf + 12, acc3);
-
-            for (var j = 0; j < 16; j++)
+            for (var vi = 0; vi < 32; vi++)
             {
-                FraudManager.Add(buf[j], labels[i + j] == 1, topScores, ref topLen);
+                if (dists[vi] < OverflowThreshold)
+                    FraudManager.Add(dists[vi], labels[i + vi] == 1, topScores, ref topLen);
             }
         }
 
-        // Scalar tail for remaining 0-15 vectors
         ScanClusterScalar(query, alignedEnd, end, topScores, ref topLen);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private void ScanClusterScalar(
-        ReadOnlySpan<sbyte> query,
+        ReadOnlySpan<short> query,
         int start, int end,
         Span<(float, bool)> topScores, ref int topLen)
     {
@@ -254,20 +237,20 @@ public sealed unsafe class IvfSearchEngine : IDisposable
         var d13 = _dimData[13];
         var labels = _fraudLabels;
 
-        var q0 = query[0];
-        var q1 = query[1];
-        var q2 = query[2];
-        var q3 = query[3];
-        var q4 = query[4];
-        var q5 = query[5];
-        var q6 = query[6];
-        var q7 = query[7];
-        var q8 = query[8];
-        var q9 = query[9];
-        var q10 = query[10];
-        var q11 = query[11];
-        var q12 = query[12];
-        var q13 = query[13];
+        var q0 = (long)query[0];
+        var q1 = (long)query[1];
+        var q2 = (long)query[2];
+        var q3 = (long)query[3];
+        var q4 = (long)query[4];
+        var q5 = (long)query[5];
+        var q6 = (long)query[6];
+        var q7 = (long)query[7];
+        var q8 = (long)query[8];
+        var q9 = (long)query[9];
+        var q10 = (long)query[10];
+        var q11 = (long)query[11];
+        var q12 = (long)query[12];
+        var q13 = (long)query[13];
 
         for (var i = start; i < end; i++)
         {
@@ -291,7 +274,7 @@ public sealed unsafe class IvfSearchEngine : IDisposable
                      + diff8 * diff8 + diff9 * diff9 + diff10 * diff10 + diff11 * diff11
                      + diff12 * diff12 + diff13 * diff13;
 
-            FraudManager.Add(dist, labels[i] == 1, topScores, ref topLen);
+            FraudManager.Add((int)dist, labels[i] == 1, topScores, ref topLen);
         }
     }
 }
