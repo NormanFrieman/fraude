@@ -18,14 +18,11 @@ public record FraudScore(string id, Transaction transaction, Customer customer, 
 
 public record FraudScoreResponse(bool approved, float fraud_score);
 
-// public record struct VectorBase(float[] vector, bool isFraud);
-
 [JsonSerializable(typeof(Transaction))]
 [JsonSerializable(typeof(Customer))]
 [JsonSerializable(typeof(Merchant))]
 [JsonSerializable(typeof(Terminal))]
 [JsonSerializable(typeof(LastTransaction))]
 [JsonSerializable(typeof(FraudScore))]
-// [JsonSerializable(typeof(ImmutableArray<VectorBase>))]
 [JsonSerializable(typeof(FraudScoreResponse))]
 internal partial class SharedJsonContext : JsonSerializerContext { }

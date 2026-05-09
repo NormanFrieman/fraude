@@ -2,7 +2,7 @@ using Fraude.Models;
 using Fraude.Tools;
 using SharedJsonContext = Fraude.Models.SharedJsonContext;
 
-var ivfSearch = IvfSearchEngine.Load("References/refs_ivf_int8.bin");
+var ivfSearch = IvfSearchEngine.Load("References/refs_ivf_int16.bin");
 
 var builder = WebApplication.CreateSlimBuilder(args);
 builder.Services.ConfigureHttpJsonOptions(options =>
