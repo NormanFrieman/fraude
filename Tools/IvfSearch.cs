@@ -109,7 +109,8 @@ public sealed unsafe class IvfSearchEngine : IDisposable
         Span<short> queryInt16 = stackalloc short[Quantization.PaddedDimensions];
         Quantization.QuantizeVectorToInt16(queryFloat, queryInt16);
 
-        Span<(float dist, bool isFraud)> topScores = stackalloc (float, bool)[5];
+        Span<long> topDistances = stackalloc long[5];
+        Span<byte> topLabels = stackalloc byte[5];
         var topLen = 0;
 
         Span<int> topClusters = stackalloc int[nProbe];
@@ -120,7 +121,7 @@ public sealed unsafe class IvfSearchEngine : IDisposable
             for (var ci = 0; ci < nProbe; ci++)
             {
                 var c = topClusters[ci];
-                ScanClusterAvx2(queryInt16, (int)_clusterOffsets[c], (int)_clusterOffsets[c + 1], topScores, ref topLen);
+                ScanClusterAvx2(queryInt16, (int)_clusterOffsets[c], (int)_clusterOffsets[c + 1], topDistances, topLabels, ref topLen);
             }
         }
         else
@@ -128,11 +129,11 @@ public sealed unsafe class IvfSearchEngine : IDisposable
             for (var ci = 0; ci < nProbe; ci++)
             {
                 var c = topClusters[ci];
-                ScanClusterScalar(queryInt16, (int)_clusterOffsets[c], (int)_clusterOffsets[c + 1], topScores, ref topLen);
+                ScanClusterScalar(queryInt16, (int)_clusterOffsets[c], (int)_clusterOffsets[c + 1], topDistances, topLabels, ref topLen);
             }
         }
 
-        return FraudManager.Detect(topScores, topLen);
+        return FraudManager.Detect(topLabels, topLen);
     }
 
     private void FindTopClusters(ReadOnlySpan<short> query, Span<int> topClusters)
@@ -174,7 +175,9 @@ public sealed unsafe class IvfSearchEngine : IDisposable
     private void ScanClusterAvx2(
         ReadOnlySpan<short> query,
         int start, int end,
-        Span<(float, bool)> topScores, ref int topLen)
+        Span<long> topDistances,
+        Span<byte> topLabels,
+        ref int topLen)
     {
         var labels = _fraudLabels;
         var count = end - start;
@@ -219,17 +222,17 @@ public sealed unsafe class IvfSearchEngine : IDisposable
             Avx.Store(evenDists, evenAcc);
             Avx.Store(oddDists, oddAcc);
 
-            FraudManager.Add(evenDists[0], labels[i] == 1, topScores, ref topLen);
-            FraudManager.Add(oddDists[0], labels[i + 1] == 1, topScores, ref topLen);
-            FraudManager.Add(evenDists[1], labels[i + 2] == 1, topScores, ref topLen);
-            FraudManager.Add(oddDists[1], labels[i + 3] == 1, topScores, ref topLen);
-            FraudManager.Add(evenDists[2], labels[i + 4] == 1, topScores, ref topLen);
-            FraudManager.Add(oddDists[2], labels[i + 5] == 1, topScores, ref topLen);
-            FraudManager.Add(evenDists[3], labels[i + 6] == 1, topScores, ref topLen);
-            FraudManager.Add(oddDists[3], labels[i + 7] == 1, topScores, ref topLen);
+            AddCandidate(evenDists[0], labels, i, topDistances, topLabels, ref topLen);
+            AddCandidate(oddDists[0], labels, i + 1, topDistances, topLabels, ref topLen);
+            AddCandidate(evenDists[1], labels, i + 2, topDistances, topLabels, ref topLen);
+            AddCandidate(oddDists[1], labels, i + 3, topDistances, topLabels, ref topLen);
+            AddCandidate(evenDists[2], labels, i + 4, topDistances, topLabels, ref topLen);
+            AddCandidate(oddDists[2], labels, i + 5, topDistances, topLabels, ref topLen);
+            AddCandidate(evenDists[3], labels, i + 6, topDistances, topLabels, ref topLen);
+            AddCandidate(oddDists[3], labels, i + 7, topDistances, topLabels, ref topLen);
         }
 
-        ScanClusterScalar(query, alignedEnd, end, topScores, ref topLen);
+        ScanClusterScalar(query, alignedEnd, end, topDistances, topLabels, ref topLen);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -253,7 +256,9 @@ public sealed unsafe class IvfSearchEngine : IDisposable
     private void ScanClusterScalar(
         ReadOnlySpan<short> query,
         int start, int end,
-        Span<(float, bool)> topScores, ref int topLen)
+        Span<long> topDistances,
+        Span<byte> topLabels,
+        ref int topLen)
     {
         var d0 = _dimData[0];
         var d1 = _dimData[1];
@@ -308,7 +313,22 @@ public sealed unsafe class IvfSearchEngine : IDisposable
                      + diff8 * diff8 + diff9 * diff9 + diff10 * diff10 + diff11 * diff11
                      + diff12 * diff12 + diff13 * diff13;
 
-            FraudManager.Add(dist, labels[i] == 1, topScores, ref topLen);
+            AddCandidate(dist, labels, i, topDistances, topLabels, ref topLen);
         }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void AddCandidate(
+        long dist,
+        byte* labels,
+        int index,
+        Span<long> topDistances,
+        Span<byte> topLabels,
+        ref int topLen)
+    {
+        if (topLen == 5 && dist >= topDistances[4])
+            return;
+
+        FraudManager.Add(dist, labels[index], topDistances, topLabels, ref topLen);
     }
 }

@@ -5,7 +5,7 @@ namespace Fraude.Tools;
 public static class FraudManager
 {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static (bool, float) Detect(ReadOnlySpan<(float, bool)> scores, int length)
+    public static (bool, float) Detect(ReadOnlySpan<byte> labels, int length)
     {
         if (length == 0)
             return (true, 0f);
@@ -13,7 +13,7 @@ public static class FraudManager
         var frauds = 0;
         for (var i = 0; i < length; i++)
         {
-            if (scores[i].Item2)
+            if (labels[i] == 1)
                 frauds++;
         }
 
@@ -22,20 +22,24 @@ public static class FraudManager
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void Add(float score, bool isFraud, Span<(float, bool)> scores, ref int length)
+    public static void Add(long distance, byte label, Span<long> distances, Span<byte> labels, ref int length)
     {
-        if (length == 5 && score >= scores[4].Item1)
+        if (length == 5 && distance >= distances[4])
             return;
 
         var pos = 0;
-        while (pos < length && pos < 5 && score >= scores[pos].Item1)
+        while (pos < length && pos < 5 && distance >= distances[pos])
             pos++;
 
         var end = length < 5 ? length : 4;
         for (var i = end; i > pos; i--)
-            scores[i] = scores[i - 1];
+        {
+            distances[i] = distances[i - 1];
+            labels[i] = labels[i - 1];
+        }
 
-        scores[pos] = (score, isFraud);
+        distances[pos] = distance;
+        labels[pos] = label;
         if (length < 5)
             length++;
     }
