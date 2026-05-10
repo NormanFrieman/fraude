@@ -1,19 +1,25 @@
 x-api: &api
   build: .
-  environment:
-    - ASPNETCORE_URLS=http://0.0.0
+  volumes:
+    - fraude-sockets:/var/run/fraude
   deploy:
     resources:
       limits:
         cpus: "0.4"
-        memory: "140M"
+        memory: "160M"
 
 services:
   api1:
     <<: *api
+    environment:
+      - FRAUDE_UNIX_SOCKET=/var/run/fraude/api1.sock
+    cpuset: "0,1"
 
   api2:
     <<: *api
+    environment:
+      - FRAUDE_UNIX_SOCKET=/var/run/fraude/api2.sock
+    cpuset: "2,3"
 
   nginx:
     image: nginx:alpine
@@ -21,6 +27,7 @@ services:
       - "9999:9999"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf
+      - fraude-sockets:/var/run/fraude
     depends_on:
       - api1
       - api2
@@ -30,3 +37,6 @@ services:
           cpus: "0.2"
           memory: "30M"
     restart: unless-stopped
+
+volumes:
+  fraude-sockets:
