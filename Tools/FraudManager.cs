@@ -7,6 +7,9 @@ public static class FraudManager
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static (bool, float) Detect(ReadOnlySpan<(float, bool)> scores, int length)
     {
+        if (length == 0)
+            return (true, 0f);
+
         var frauds = 0;
         for (var i = 0; i < length; i++)
         {

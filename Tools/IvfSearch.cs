@@ -166,11 +166,6 @@ public sealed unsafe class IvfSearchEngine : IDisposable
         }
     }
 
-// AVX2 SIMD: process 32 vectors per outer iteration using int accumulator.
-    // Uses saturating add to handle potential overflow (14 * 32767² ≈ 60B > int32 max).
-    // If dist exceeds 1B during accumulation, it won't be in top 5 anyway.
-    private const int OverflowThreshold = 1000000000; // 1B
-
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private void ScanClusterAvx2(
         ReadOnlySpan<short> query,
@@ -180,7 +175,7 @@ public sealed unsafe class IvfSearchEngine : IDisposable
         var labels = _fraudLabels;
         var count = end - start;
         var alignedEnd = start + (count & ~31);
-        Span<int> dists = stackalloc int[32];
+        Span<long> dists = stackalloc long[32];
 
         for (var i = start; i < alignedEnd; i += 32)
         {
@@ -194,21 +189,13 @@ public sealed unsafe class IvfSearchEngine : IDisposable
                 for (var vi = 0; vi < 32; vi++)
                 {
                     var diff = q - ptr[vi];
-                    var sq = diff * diff;
-                    var acc = dists[vi];
-
-                    if (acc < OverflowThreshold)
-                    {
-                        var newAcc = acc + sq;
-                        dists[vi] = (newAcc < acc || newAcc >= OverflowThreshold) ? int.MaxValue : newAcc;
-                    }
+                    dists[vi] += (long)diff * diff;
                 }
             }
 
             for (var vi = 0; vi < 32; vi++)
             {
-                if (dists[vi] < OverflowThreshold)
-                    FraudManager.Add(dists[vi], labels[i + vi] == 1, topScores, ref topLen);
+                FraudManager.Add(dists[vi], labels[i + vi] == 1, topScores, ref topLen);
             }
         }
 
@@ -274,7 +261,7 @@ public sealed unsafe class IvfSearchEngine : IDisposable
                      + diff8 * diff8 + diff9 * diff9 + diff10 * diff10 + diff11 * diff11
                      + diff12 * diff12 + diff13 * diff13;
 
-            FraudManager.Add((int)dist, labels[i] == 1, topScores, ref topLen);
+            FraudManager.Add(dist, labels[i] == 1, topScores, ref topLen);
         }
     }
 }
