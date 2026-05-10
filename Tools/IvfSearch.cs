@@ -140,7 +140,9 @@ public sealed unsafe class IvfSearchEngine : IDisposable
         var k = _centroids.Length;
         var nProbe = topClusters.Length;
 
-        Span<(long dist, int idx)> all = stackalloc (long, int)[k];
+        Span<long> topDistances = stackalloc long[nProbe];
+        topDistances.Fill(long.MaxValue);
+        topClusters.Fill(-1);
 
         for (var c = 0; c < k; c++)
         {
@@ -151,23 +153,20 @@ public sealed unsafe class IvfSearchEngine : IDisposable
                 var diff = (long)query[j] - (long)centroid[j];
                 dist += diff * diff;
             }
-            all[c] = (dist, c);
-        }
 
-        for (var i = 0; i < nProbe; i++)
-        {
-            var bestIdx = i;
-            var bestDist = all[i].dist;
-            for (var j = i + 1; j < k; j++)
+            if (dist >= topDistances[nProbe - 1])
+                continue;
+
+            var pos = nProbe - 1;
+            while (pos > 0 && dist < topDistances[pos - 1])
             {
-                if (all[j].dist < bestDist)
-                {
-                    bestDist = all[j].dist;
-                    bestIdx = j;
-                }
+                topDistances[pos] = topDistances[pos - 1];
+                topClusters[pos] = topClusters[pos - 1];
+                pos--;
             }
-            topClusters[i] = all[bestIdx].idx;
-            (all[i], all[bestIdx]) = (all[bestIdx], all[i]);
+
+            topDistances[pos] = dist;
+            topClusters[pos] = c;
         }
     }
 
