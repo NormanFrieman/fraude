@@ -104,7 +104,7 @@ public sealed unsafe class IvfSearchEngine : IDisposable
     }
 
     [SkipLocalsInit]
-    public (bool approved, float fraudScore) Search(ReadOnlySpan<float> queryFloat, int nProbe = 26)
+    public (bool approved, float fraudScore) Search(ReadOnlySpan<float> queryFloat, int nProbe = 30)
     {
         Span<short> queryInt16 = stackalloc short[Quantization.PaddedDimensions];
         Quantization.QuantizeVectorToInt16(queryFloat, queryInt16);
