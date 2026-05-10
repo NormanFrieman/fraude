@@ -5,12 +5,26 @@ using SharedJsonContext = Fraude.Models.SharedJsonContext;
 var ivfSearch = IvfSearchEngine.Load("References/refs_ivf_int16.bin");
 
 var builder = WebApplication.CreateSlimBuilder(args);
+var unixSocketPath = Environment.GetEnvironmentVariable("FRAUDE_UNIX_SOCKET");
+if (!string.IsNullOrEmpty(unixSocketPath))
+{
+    if (File.Exists(unixSocketPath)) File.Delete(unixSocketPath);
+    builder.WebHost.ConfigureKestrel(k => k.ListenUnixSocket(unixSocketPath));
+}
+
 builder.Services.ConfigureHttpJsonOptions(options =>
 {
     options.SerializerOptions.TypeInfoResolver = SharedJsonContext.Default;
 });
 
 var app = builder.Build();
+if (!string.IsNullOrWhiteSpace(unixSocketPath) && OperatingSystem.IsLinux())
+{
+    app.Lifetime.ApplicationStarted.Register(() =>
+    {
+        SetUnixSocketPermissions(unixSocketPath);
+    });
+}
 
 app.MapPost("/fraud-score", (FraudScore score) =>
 {
@@ -66,3 +80,14 @@ app.MapPost("/fraud-score", (FraudScore score) =>
 
 app.MapGet("/ready", IResult () => Results.Ok());
 app.Run();
+
+static void SetUnixSocketPermissions(string unixSocketPath)
+{
+#pragma warning disable CA1416
+    File.SetUnixFileMode(
+        unixSocketPath,
+        UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+        UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute |
+        UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute);
+#pragma warning restore CA1416
+}
