@@ -1,4 +1,3 @@
-using System.IO.MemoryMappedFiles;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
@@ -11,8 +10,8 @@ public sealed unsafe class IvfSearchEngine : IDisposable
     private const uint Magic = 0x49564632;
     private const int Dims = 14;
 
-    private readonly MemoryMappedFile _mmf;
-    private readonly MemoryMappedViewAccessor _accessor;
+    private readonly byte[] _data;
+    private readonly GCHandle _dataHandle;
     private readonly byte* _basePtr;
     private readonly int _n;
     private readonly int _k;
@@ -22,8 +21,8 @@ public sealed unsafe class IvfSearchEngine : IDisposable
     private readonly short[][] _centroids;
 
     private IvfSearchEngine(
-        MemoryMappedFile mmf,
-        MemoryMappedViewAccessor accessor,
+        byte[] data,
+        GCHandle dataHandle,
         byte* basePtr,
         int n,
         int k,
@@ -32,8 +31,8 @@ public sealed unsafe class IvfSearchEngine : IDisposable
         uint* clusterOffsets,
         short[][] centroids)
     {
-        _mmf = mmf;
-        _accessor = accessor;
+        _data = data;
+        _dataHandle = dataHandle;
         _basePtr = basePtr;
         _n = n;
         _k = k;
@@ -45,61 +44,67 @@ public sealed unsafe class IvfSearchEngine : IDisposable
 
     public static IvfSearchEngine Load(string path)
     {
-        var fileSize = new FileInfo(path).Length;
-        var mmf = MemoryMappedFile.CreateFromFile(
-            path, FileMode.Open, null, 0, MemoryMappedFileAccess.Read);
-        var accessor = mmf.CreateViewAccessor(0, fileSize, MemoryMappedFileAccess.Read);
-        var handle = accessor.SafeMemoryMappedViewHandle;
-        byte* basePtr = (byte*)handle.DangerousGetHandle();
+        var data = File.ReadAllBytes(path);
+        var dataHandle = GCHandle.Alloc(data, GCHandleType.Pinned);
 
-        var headerSpan = new ReadOnlySpan<byte>(basePtr, 32);
-        var magic = MemoryMarshal.Read<uint>(headerSpan);
-        if (magic != Magic)
-            throw new InvalidDataException($"Invalid magic: 0x{magic:X8}");
-
-        var n = (int)MemoryMarshal.Read<uint>(headerSpan[4..]);
-        var k = (int)MemoryMarshal.Read<uint>(headerSpan[8..]);
-        var d = (int)MemoryMarshal.Read<uint>(headerSpan[12..]);
-
-        if (d != Dims)
-            throw new InvalidDataException($"Expected {Dims} dimensions, got {d}");
-
-        var offset = 32;
-
-        var centroids = new short[k][];
-        for (var c = 0; c < k; c++)
+        try
         {
-            centroids[c] = new short[Quantization.PaddedDimensions];
-            new ReadOnlySpan<byte>(basePtr + offset, Quantization.PaddedDimensions * 2)
-                .CopyTo(MemoryMarshal.Cast<short, byte>(centroids[c].AsSpan()));
-            offset += Quantization.PaddedDimensions * 2;
+            byte* basePtr = (byte*)dataHandle.AddrOfPinnedObject();
+
+            var headerSpan = new ReadOnlySpan<byte>(basePtr, 32);
+            var magic = MemoryMarshal.Read<uint>(headerSpan);
+            if (magic != Magic)
+                throw new InvalidDataException($"Invalid magic: 0x{magic:X8}");
+
+            var n = (int)MemoryMarshal.Read<uint>(headerSpan[4..]);
+            var k = (int)MemoryMarshal.Read<uint>(headerSpan[8..]);
+            var d = (int)MemoryMarshal.Read<uint>(headerSpan[12..]);
+
+            if (d != Dims)
+                throw new InvalidDataException($"Expected {Dims} dimensions, got {d}");
+
+            var offset = 32;
+
+            var centroids = new short[k][];
+            for (var c = 0; c < k; c++)
+            {
+                centroids[c] = new short[Quantization.PaddedDimensions];
+                new ReadOnlySpan<byte>(basePtr + offset, Quantization.PaddedDimensions * 2)
+                    .CopyTo(MemoryMarshal.Cast<short, byte>(centroids[c].AsSpan()));
+                offset += Quantization.PaddedDimensions * 2;
+            }
+
+            var clusterOffsets = (uint*)(basePtr + offset);
+            offset += (k + 1) * 4;
+
+            var dimData = new short*[d];
+            for (var j = 0; j < d; j++)
+            {
+                dimData[j] = (short*)(basePtr + offset);
+                offset += n * 2;
+            }
+
+            var fraudLabels = basePtr + offset;
+
+            return new IvfSearchEngine(
+                data, dataHandle, basePtr, n, k,
+                dimData, fraudLabels, clusterOffsets, centroids);
         }
-
-        var clusterOffsets = (uint*)(basePtr + offset);
-        offset += (k + 1) * 4;
-
-        var dimData = new short*[d];
-        for (var j = 0; j < d; j++)
+        catch
         {
-            dimData[j] = (short*)(basePtr + offset);
-            offset += n * 2;
+            dataHandle.Free();
+            throw;
         }
-
-        var fraudLabels = basePtr + offset;
-
-        return new IvfSearchEngine(
-            mmf, accessor, basePtr, n, k,
-            dimData, fraudLabels, clusterOffsets, centroids);
     }
 
     public void Dispose()
     {
-        _accessor.Dispose();
-        _mmf.Dispose();
+        if (_dataHandle.IsAllocated)
+            _dataHandle.Free();
     }
 
     [SkipLocalsInit]
-    public (bool approved, float fraudScore) Search(ReadOnlySpan<float> queryFloat, int nProbe = 32)
+    public (bool approved, float fraudScore) Search(ReadOnlySpan<float> queryFloat, int nProbe = 26)
     {
         Span<short> queryInt16 = stackalloc short[Quantization.PaddedDimensions];
         Quantization.QuantizeVectorToInt16(queryFloat, queryInt16);
@@ -174,32 +179,75 @@ public sealed unsafe class IvfSearchEngine : IDisposable
     {
         var labels = _fraudLabels;
         var count = end - start;
-        var alignedEnd = start + (count & ~31);
-        Span<long> dists = stackalloc long[32];
+        var alignedEnd = start + (count & ~7);
+        long* evenDists = stackalloc long[4];
+        long* oddDists = stackalloc long[4];
+        var q0 = Vector256.Create((int)query[0]);
+        var q1 = Vector256.Create((int)query[1]);
+        var q2 = Vector256.Create((int)query[2]);
+        var q3 = Vector256.Create((int)query[3]);
+        var q4 = Vector256.Create((int)query[4]);
+        var q5 = Vector256.Create((int)query[5]);
+        var q6 = Vector256.Create((int)query[6]);
+        var q7 = Vector256.Create((int)query[7]);
+        var q8 = Vector256.Create((int)query[8]);
+        var q9 = Vector256.Create((int)query[9]);
+        var q10 = Vector256.Create((int)query[10]);
+        var q11 = Vector256.Create((int)query[11]);
+        var q12 = Vector256.Create((int)query[12]);
+        var q13 = Vector256.Create((int)query[13]);
 
-        for (var i = start; i < alignedEnd; i += 32)
+        for (var i = start; i < alignedEnd; i += 8)
         {
-            for (var vi = 0; vi < 32; vi++) dists[vi] = 0;
+            var evenAcc = Vector256<long>.Zero;
+            var oddAcc = Vector256<long>.Zero;
 
-            for (var dim = 0; dim < Dims; dim++)
-            {
-                var q = (int)query[dim];
-                var ptr = _dimData[dim] + i;
+            AccumulateSquaredDiff8(ref evenAcc, ref oddAcc, q0, _dimData[0] + i);
+            AccumulateSquaredDiff8(ref evenAcc, ref oddAcc, q1, _dimData[1] + i);
+            AccumulateSquaredDiff8(ref evenAcc, ref oddAcc, q2, _dimData[2] + i);
+            AccumulateSquaredDiff8(ref evenAcc, ref oddAcc, q3, _dimData[3] + i);
+            AccumulateSquaredDiff8(ref evenAcc, ref oddAcc, q4, _dimData[4] + i);
+            AccumulateSquaredDiff8(ref evenAcc, ref oddAcc, q5, _dimData[5] + i);
+            AccumulateSquaredDiff8(ref evenAcc, ref oddAcc, q6, _dimData[6] + i);
+            AccumulateSquaredDiff8(ref evenAcc, ref oddAcc, q7, _dimData[7] + i);
+            AccumulateSquaredDiff8(ref evenAcc, ref oddAcc, q8, _dimData[8] + i);
+            AccumulateSquaredDiff8(ref evenAcc, ref oddAcc, q9, _dimData[9] + i);
+            AccumulateSquaredDiff8(ref evenAcc, ref oddAcc, q10, _dimData[10] + i);
+            AccumulateSquaredDiff8(ref evenAcc, ref oddAcc, q11, _dimData[11] + i);
+            AccumulateSquaredDiff8(ref evenAcc, ref oddAcc, q12, _dimData[12] + i);
+            AccumulateSquaredDiff8(ref evenAcc, ref oddAcc, q13, _dimData[13] + i);
 
-                for (var vi = 0; vi < 32; vi++)
-                {
-                    var diff = q - ptr[vi];
-                    dists[vi] += (long)diff * diff;
-                }
-            }
+            Avx.Store(evenDists, evenAcc);
+            Avx.Store(oddDists, oddAcc);
 
-            for (var vi = 0; vi < 32; vi++)
-            {
-                FraudManager.Add(dists[vi], labels[i + vi] == 1, topScores, ref topLen);
-            }
+            FraudManager.Add(evenDists[0], labels[i] == 1, topScores, ref topLen);
+            FraudManager.Add(oddDists[0], labels[i + 1] == 1, topScores, ref topLen);
+            FraudManager.Add(evenDists[1], labels[i + 2] == 1, topScores, ref topLen);
+            FraudManager.Add(oddDists[1], labels[i + 3] == 1, topScores, ref topLen);
+            FraudManager.Add(evenDists[2], labels[i + 4] == 1, topScores, ref topLen);
+            FraudManager.Add(oddDists[2], labels[i + 5] == 1, topScores, ref topLen);
+            FraudManager.Add(evenDists[3], labels[i + 6] == 1, topScores, ref topLen);
+            FraudManager.Add(oddDists[3], labels[i + 7] == 1, topScores, ref topLen);
         }
 
         ScanClusterScalar(query, alignedEnd, end, topScores, ref topLen);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void AccumulateSquaredDiff8(
+        ref Vector256<long> evenAcc,
+        ref Vector256<long> oddAcc,
+        Vector256<int> q,
+        short* values)
+    {
+        var data = Avx2.ConvertToVector256Int32(Sse2.LoadVector128(values));
+        var diff = Avx2.Subtract(q, data);
+        var evenSquares = Avx2.Multiply(diff, diff);
+        var oddDiff = Avx2.ShiftRightLogical128BitLane(diff.AsByte(), 4).AsInt32();
+        var oddSquares = Avx2.Multiply(oddDiff, oddDiff);
+
+        evenAcc = Avx2.Add(evenAcc, evenSquares);
+        oddAcc = Avx2.Add(oddAcc, oddSquares);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
